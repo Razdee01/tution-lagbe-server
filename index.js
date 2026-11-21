@@ -19,7 +19,9 @@ export async function connectToMongoDB() {
     console.dir(err);
   }
 }
-const mongodb =connectToMongoDB()
+const mongodb =await connectToMongoDB()
+  const database = mongodb.db("mentor-lagbe");
+  const tuitions = database.collection("tuitions");
 
 app.use(cors());
 app.use(express.json());
@@ -30,4 +32,9 @@ app.get("/", (req, res) => {
 
 app.listen(port, () => {
   console.log(`Example app listening on port ${port}`);
+});
+// get apis
+app.get("/tuitions", async (req, res) => {
+  const result = await tuitions.find().toArray();
+  res.send(result);
 });
