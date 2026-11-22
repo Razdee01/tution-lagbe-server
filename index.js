@@ -1,6 +1,6 @@
 import express from "express";
 import cors from "cors";
-import { MongoClient } from "mongodb";
+import { MongoClient, ObjectId } from "mongodb";
 import "dotenv/config";
 const app = express();
 const port = 5000;
@@ -21,7 +21,8 @@ export async function connectToMongoDB() {
 }
 const mongodb =await connectToMongoDB()
   const database = mongodb.db("mentor-lagbe");
-  const tuitions = database.collection("tuitions");
+  const tuitionsCollection = database.collection("tuitions");
+  const applicationCollection = database.collection("applications");
 
 app.use(cors());
 app.use(express.json());
@@ -35,6 +36,17 @@ app.listen(port, () => {
 });
 // get apis
 app.get("/tuitions", async (req, res) => {
-  const result = await tuitions.find().toArray();
+  const result = await tuitionsCollection.find().toArray();
   res.send(result);
+});
+app.get("/tuitions/:id",async(req,res)=>{
+  const id = req.params
+  const result= await tuitionsCollection.findOne({_id:new ObjectId(id)})
+  res.send(result)
+})
+// post apis
+app.post("/applications",async(req,res)=>{
+  const data=req.body
+  const result =await applicationCollection.insertOne(data)
+  res.send(result)
 });
