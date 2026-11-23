@@ -41,13 +41,24 @@ const escapeRegex = (str) => str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 // Example: GET /tuitions?search=math&mode=ONLINE&subject=Physics&page=1&limit=9
 app.get("/tuitions", async (req, res) => {
   try {
-    const { search, mode, subject, page = 1, limit = 9 } = req.query;
-
+const {
+  search,
+  mode,
+  subject,
+  class: classLevel,
+  location,
+  page = 1,
+  limit = 9,
+} = req.query;
     const filter = {};
 
     // 1. Exact-match filters
     if (mode && mode !== "ALL") filter.mode = mode;
     if (subject && subject !== "ALL") filter.subject = subject;
+    if (classLevel && classLevel !== "ALL") filter.classLevel = classLevel;
+    if (location && location !== "ALL") {
+      filter.location = new RegExp(escapeRegex(location.trim()), "i");
+    }
 
     // 2. Text search across several fields
     if (search && search.trim()) {
