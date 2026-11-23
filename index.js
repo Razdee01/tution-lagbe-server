@@ -131,6 +131,14 @@ app.get("/tuitions/:id", async (req, res) => {
     res.status(500).json({ message: "Server error" });
   }
 });
+app.get("/applications/:email", async (req, res) => {
+  const email = req.params.email;
+  const result = await applicationCollection
+    .find({ studentEmail: email })
+    .toArray();
+
+  res.send(result);
+});
 
 // ---------------- POST APIs ----------------
 
@@ -141,6 +149,12 @@ app.post("/applications", async (req, res) => {
   res.send(result);
 });
 
+// ---------------- DELETE APIs ----------------
+app.delete("/applications/:id",async(req,res)=>{
+  const id=req.params.id
+  const result =await applicationCollection.deleteOne({ _id: new ObjectId(id) });
+  res.send(result)
+});
 app.listen(port, () => {
   console.log(`Example app listening on port ${port}`);
 });
