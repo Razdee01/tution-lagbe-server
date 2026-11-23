@@ -155,6 +155,88 @@ app.delete("/applications/:id",async(req,res)=>{
   const result =await applicationCollection.deleteOne({ _id: new ObjectId(id) });
   res.send(result)
 });
+
+// 1. Get all tuitions created by a tutor
+app.get("/tuitions/tutor/:email", async (req, res) => {
+  const email = req.params.email;
+  const tuitions = await tuitionsCollection
+    .find({ tutorEmail: email })
+    .sort({ createdAt: -1, _id: -1 })
+    .toArray();
+  res.json(tuitions);
+});
+
+// 2. Post a new tuition (Free plan: max 2 posts; Pro plan: unlimited)
+app.post("/tuitions", async (req, res) => {
+  const body = req.body;
+  const tutor = await usersCollection.findOne({ email: body.tutorEmail });
+  const plan = (tutor?.plan || "free").toLowerCase();
+
+  if (plan !== "pro") {
+    const existingCount = await tuitionsCollection.countDocuments({
+      tutorEmail: body.tutorEmail,
+    });
+    if (existingCount >= 2) {
+      return res.status(403).json({
+        message: "Free plan allows up to 2 tuition posts. Upgrade to Pro for unlimited posts.",
+      });
+    }
+  }
+
+  const newTuition = {
+    ...body,
+    monthlyFee: Number(body.monthlyFee),
+    daysPerWeek: Number(body.daysPerWeek),
+    approvalStatus: "pending",
+    isActive: true,
+    createdAt: new Date().toISOString(),
+  };
+
+  const result = await tuitionsCollection.insertOne(newTuition);
+  res.status(201).json({ ...newTuition, _id: result.insertedId });
+});
+
+// 3. Update tuition details or toggle isActive
+app.patch("/tuitions/:id", async (req, res) => {
+  const { id } = req.params;
+  const updates = req.body;
+  const result = await tuitionsCollection.updateOne(
+    { _id: new ObjectId(id) },
+    { $set: updates }
+  );
+  res.json(result);
+});
+
+// 4. Delete a tuition post
+app.delete("/tuitions/:id", async (req, res) => {
+  const { id } = req.params;
+  const result = await tuitionsCollection.deleteOne({ _id: new ObjectId(id) });
+  res.json(result);
+});
+
+// 5. Get all student applications for a tutor's tuitions
+app.get("/applications/tutor/:email", async (req, res) => {
+  const email = req.params.email;
+  const applications = await applicationsCollection
+    .find({ tutorEmail: email })
+    .sort({ appliedAt: -1, _id: -1 })
+    .toArray();
+  res.json(applications);
+});
+
+// 6. Accept or Reject an application
+app.patch("/applications/:id/status", async (req, res) => {
+  const { id } = req.params;
+  const { status } = req.body;
+  if (!["accepted", "rejected", "pending"].includes(status)) {
+    return res.status(400).json({ message: "Invalid status" });
+  }
+  const result = await applicationsCollection.updateOne(
+    { _id: new ObjectId(id) },
+    { $set: { status } }
+  );
+  res.json(result);
+});
 app.listen(port, () => {
   console.log(`Example app listening on port ${port}`);
 });
