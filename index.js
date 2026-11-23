@@ -24,6 +24,7 @@ const mongodb = await connectToMongoDB();
 const database = mongodb.db("mentor-lagbe");
 const tuitionsCollection = database.collection("tuitions");
 const applicationCollection = database.collection("applications");
+const usersCollection=database.collection("user")
 
 app.use(cors());
 app.use(express.json());
@@ -50,7 +51,10 @@ const {
   page = 1,
   limit = 9,
 } = req.query;
-    const filter = {};
+    const filter = {
+      approvalStatus: "approved",
+      isActive: { $ne: false },
+    };
 
     // 1. Exact-match filters
     if (mode && mode !== "ALL") filter.mode = mode;
@@ -217,7 +221,7 @@ app.delete("/tuitions/:id", async (req, res) => {
 // 5. Get all student applications for a tutor's tuitions
 app.get("/applications/tutor/:email", async (req, res) => {
   const email = req.params.email;
-  const applications = await applicationsCollection
+  const applications = await applicationCollection
     .find({ tutorEmail: email })
     .sort({ appliedAt: -1, _id: -1 })
     .toArray();
@@ -231,12 +235,96 @@ app.patch("/applications/:id/status", async (req, res) => {
   if (!["accepted", "rejected", "pending"].includes(status)) {
     return res.status(400).json({ message: "Invalid status" });
   }
-  const result = await applicationsCollection.updateOne(
+  const result = await applicationCollection.updateOne(
     { _id: new ObjectId(id) },
     { $set: { status } }
   );
   res.json(result);
 });
+
+// admin
+// Admin Overview stats
+app.get("/admin/overview", async (req, res) => {
+  const users = await usersCollection.find().toArray();
+  const tuitions = await tuitionsCollection.find().toArray();
+  const payments = await paymentsCollection.find().toArray();
+
+  const totalUsers = users.length;
+  const totalTutors = users.filter(
+    (u) => String(u.role || "").toLowerCase() === "tutor"
+  ).length;
+  const pendingTuitions = tuitions.filter(
+    (t) => t.approvalStatus === "pending"
+  ).length;
+  const approvedTuitions = tuitions.filter(
+    (t) => t.approvalStatus === "approved"
+  ).length;
+  const totalRevenue = payments.reduce(
+    (sum, p) => sum + Number(p.amount || 0),
+    0
+  );
+
+  res.json({
+    totalUsers,
+    totalTutors,
+    pendingTuitions,
+    approvedTuitions,
+    totalRevenue,
+  });
+});
+
+// Get all users
+app.get("/admin/users", async (req, res) => {
+  const users = await usersCollection.find().sort({ _id: -1 }).toArray();
+  res.json(users);
+});
+
+// Update user role
+app.patch("/admin/users/:id/role", async (req, res) => {
+  const { id } = req.params;
+  const { role } = req.body;
+  if (!["student", "tutor", "admin"].includes(role)) {
+    return res.status(400).json({ message: "Invalid role" });
+  }
+  const result = await usersCollection.updateOne(
+    { _id: new ObjectId(id) },
+    { $set: { role } }
+  );
+  res.json(result);
+});
+
+// Get all tuitions for moderation
+app.get("/admin/tuitions", async (req, res) => {
+  const tuitions = await tuitionsCollection
+    .find()
+    .sort({ createdAt: -1, _id: -1 })
+    .toArray();
+  res.json(tuitions);
+});
+
+// Approve or Reject tuition
+app.patch("/admin/tuitions/:id/approval", async (req, res) => {
+  const { id } = req.params;
+  const { approvalStatus } = req.body;
+  if (!["pending", "approved", "rejected"].includes(approvalStatus)) {
+    return res.status(400).json({ message: "Invalid approval status" });
+  }
+  const result = await tuitionsCollection.updateOne(
+    { _id: new ObjectId(id) },
+    { $set: { approvalStatus } }
+  );
+  res.json(result);
+});
+
+// Get all payment transactions
+app.get("/admin/transactions", async (req, res) => {
+  const payments = await paymentsCollection
+    .find()
+    .sort({ paidAt: -1, _id: -1 })
+    .toArray();
+  res.json(payments);
+});
+
 app.listen(port, () => {
   console.log(`Example app listening on port ${port}`);
 });
