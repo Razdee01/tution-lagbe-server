@@ -453,6 +453,73 @@ app.get("/users/profile/:email", async (req, res) => {
     res.status(500).json({ message: "Failed to fetch user profile" });
   }
 });
+app.patch("/users/bookmarks/toggle", async (req, res) => {
+  try {
+    const { email, tuitionId } = req.body;
+    if (!email || !tuitionId) {
+      return res.status(400).json({ message: "Missing email or tuitionId" });
+    }
+
+    const user = await usersCollection.findOne({ email });
+    const current = Array.isArray(user?.bookmarkedTuitionIds)
+      ? user.bookmarkedTuitionIds
+      : [];
+    const exists = current.includes(tuitionId);
+    const isPro = String(user?.plan || "free").toLowerCase() === "pro";
+
+    if (!exists && !isPro && current.length >= 5) {
+      return res.status(403).json({
+        message:
+          "Free students can bookmark up to 5 tuitions. Upgrade to Pro for unlimited bookmarks.",
+      });
+    }
+
+    const updated = exists
+      ? current.filter((id) => id !== tuitionId)
+      : [...current, tuitionId];
+
+    await usersCollection.updateOne(
+      { email },
+      { $set: { bookmarkedTuitionIds: updated } },
+      { upsert: true },
+    );
+
+    res.json({
+      bookmarked: !exists,
+      bookmarkedTuitionIds: updated,
+    });
+  } catch (err) {
+    console.error("Bookmark toggle error:", err);
+    res.status(500).json({ message: "Failed to toggle bookmark" });
+  }
+});
+
+app.get("/users/bookmarks/:email", async (req, res) => {
+  try {
+    const email = decodeURIComponent(req.params.email);
+    const user = await usersCollection.findOne({ email });
+    const ids = Array.isArray(user?.bookmarkedTuitionIds)
+      ? user.bookmarkedTuitionIds
+      : [];
+
+    if (ids.length === 0) {
+      return res.json([]);
+    }
+
+    const objectIds = ids
+      .filter((id) => ObjectId.isValid(id))
+      .map((id) => new ObjectId(id));
+
+    const savedTuitions = await tuitionsCollection
+      .find({ _id: { $in: objectIds } })
+      .toArray();
+
+    res.json(savedTuitions);
+  } catch (err) {
+    console.error("Fetch bookmarks error:", err);
+    res.status(500).json({ message: "Failed to fetch saved tuitions" });
+  }
+});
 app.listen(port, () => {
   console.log(`Example app listening on port ${port}`);
 });
