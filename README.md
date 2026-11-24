@@ -12,19 +12,19 @@ This API stores and serves tuition listings, applications, users, bookmarks, and
 
 > **TODO before submission:** replace with the deployed backend URL.
 
-- Backend API: `https://<your-deployed-api-url>`
+- Backend API: `https://tution-lagbe-server.vercel.app/`
 - Local development: `http://localhost:5000`
 - Frontend client: `https://<your-deployed-client-url>`
 
-## Demo credentials
+##  credentials
 
-> **TODO before submission:** replace these placeholders with the real demo accounts.
+
 
 | Role | Email | Password |
 | --- | --- | --- |
-| Admin | `<admin-email>` | `<admin-password>` |
-| Tutor | `<tutor-email>` | `<tutor-password>` |
-| Student | `<student-email>` | `<student-password>` |
+| Admin | `admin@gmail.com` | `<12345678>` |
+| Tutor | `<tutor@gmail.com>` | `<12345678>` |
+| Student | `<student@gmail.com>` | `<12345678>` |
 
 The Admin role is not self-registerable. Set a user's `role` field to `admin` in MongoDB (or update it from the admin users screen after signing in) to create the demo admin.
 
