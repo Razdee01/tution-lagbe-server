@@ -3,6 +3,8 @@ import cors from "cors";
 import { MongoClient, ObjectId } from "mongodb";
 import "dotenv/config";
 import Stripe from "stripe";
+import jwt from "jsonwebtoken";
+
 const app = express();
 const port = 5000;
 
@@ -10,6 +12,7 @@ const client = new MongoClient(
   `mongodb://${process.env.MONGO_USERNAME}:${process.env.MONGO_PASSWORD}@ac-tu4msos-shard-00-00.xujbby0.mongodb.net:27017,ac-tu4msos-shard-00-01.xujbby0.mongodb.net:27017,ac-tu4msos-shard-00-02.xujbby0.mongodb.net:27017/?ssl=true&replicaSet=atlas-113gae-shard-0&authSource=admin`,
 );
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
+
 export async function connectToMongoDB() {
   try {
     await client.connect();
@@ -24,8 +27,9 @@ const mongodb = await connectToMongoDB();
 const database = mongodb.db("mentor-lagbe");
 const tuitionsCollection = database.collection("tuitions");
 const applicationCollection = database.collection("applications");
-const usersCollection=database.collection("user")
+const usersCollection = database.collection("user");
 const paymentsCollection = database.collection("payments");
+
 app.use(cors());
 app.use(express.json());
 
@@ -36,27 +40,101 @@ app.get("/", (req, res) => {
 // Escapes special regex characters so user input like "(" or "*" can't break the query
 const escapeRegex = (str) => str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
-// ---------------- GET APIs ----------------
+// ---------------- JWT & ROLE MIDDLEWARES ----------------
 
-// Browse tuitions with search, filters and pagination
-// Example: GET /tuitions?search=math&mode=ONLINE&subject=Physics&page=1&limit=9
+// Issue signed JWT after BetterAuth login/session
+app.post("/jwt", async (req, res) => {
+  try {
+    const { email } = req.body;
+    if (!email) {
+      return res.status(400).json({ message: "Email is required" });
+    }
+
+    const user = await usersCollection.findOne({ email });
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    const token = jwt.sign(
+      {
+        email: user.email,
+        role: user.role || "student",
+      },
+      process.env.JWT_ACCESS_SECRET,
+      { expiresIn: "7d" },
+    );
+
+    res.json({ token });
+  } catch (err) {
+    console.error("JWT generation error:", err);
+    res.status(500).json({ message: "Failed to generate token" });
+  }
+});
+
+// Verify JWT token
+const verifyToken = (req, res, next) => {
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith("Bearer ")) {
+    return res.status(401).json({ message: "Unauthorized: Missing token" });
+  }
+
+  const token = authHeader.split(" ")[1];
+  jwt.verify(token, process.env.JWT_ACCESS_SECRET, (err, decoded) => {
+    if (err) {
+      return res
+        .status(401)
+        .json({ message: "Unauthorized: Invalid or expired token" });
+    }
+    req.decoded = decoded;
+    next();
+  });
+};
+
+// Verify Student role
+const verifyStudent = async (req, res, next) => {
+  const user = await usersCollection.findOne({ email: req.decoded?.email });
+  if (user?.role !== "student") {
+    return res.status(403).json({ message: "Forbidden: Student access only" });
+  }
+  next();
+};
+
+// Verify Tutor role
+const verifyTutor = async (req, res, next) => {
+  const user = await usersCollection.findOne({ email: req.decoded?.email });
+  if (user?.role !== "tutor") {
+    return res.status(403).json({ message: "Forbidden: Tutor access only" });
+  }
+  next();
+};
+
+// Verify Admin role
+const verifyAdmin = async (req, res, next) => {
+  const user = await usersCollection.findOne({ email: req.decoded?.email });
+  if (user?.role !== "admin") {
+    return res.status(403).json({ message: "Forbidden: Admin access only" });
+  }
+  next();
+};
+
+// ---------------- PUBLIC TUITION APIs ----------------
+
 app.get("/tuitions", async (req, res) => {
   try {
-const {
-  search,
-  mode,
-  subject,
-  class: classLevel,
-  location,
-  page = 1,
-  limit = 9,
-} = req.query;
+    const {
+      search,
+      mode,
+      subject,
+      class: classLevel,
+      location,
+      page = 1,
+      limit = 9,
+    } = req.query;
     const filter = {
       approvalStatus: "approved",
       isActive: { $ne: false },
     };
 
-    // 1. Exact-match filters
     if (mode && mode !== "ALL") filter.mode = mode;
     if (subject && subject !== "ALL") filter.subject = subject;
     if (classLevel && classLevel !== "ALL") filter.classLevel = classLevel;
@@ -64,9 +142,8 @@ const {
       filter.location = new RegExp(escapeRegex(location.trim()), "i");
     }
 
-    // 2. Text search across several fields
     if (search && search.trim()) {
-      const regex = new RegExp(escapeRegex(search.trim()), "i"); // i = case-insensitive
+      const regex = new RegExp(escapeRegex(search.trim()), "i");
       filter.$or = [
         { title: regex },
         { subject: regex },
@@ -75,15 +152,14 @@ const {
       ];
     }
 
-    // 3. Pagination
     const pageNum = Math.max(parseInt(page) || 1, 1);
-    const limitNum = Math.min(parseInt(limit) || 9, 50); // cap it
+    const limitNum = Math.min(parseInt(limit) || 9, 50);
     const skip = (pageNum - 1) * limitNum;
 
     const [tuitions, total] = await Promise.all([
       tuitionsCollection
         .find(filter)
-        .sort({ _id: -1 }) // newest first
+        .sort({ _id: -1 })
         .skip(skip)
         .limit(limitNum)
         .toArray(),
@@ -102,8 +178,7 @@ const {
   }
 });
 
-// Subject dropdown options.
-// IMPORTANT: this must stay ABOVE "/tuitions/:id", otherwise "subjects" is treated as an id.
+// IMPORTANT: Keep "/tuitions/subjects" above "/tuitions/:id"
 app.get("/tuitions/subjects", async (req, res) => {
   try {
     const subjects = await tuitionsCollection.distinct("subject");
@@ -114,7 +189,6 @@ app.get("/tuitions/subjects", async (req, res) => {
   }
 });
 
-// Single tuition by id
 app.get("/tuitions/:id", async (req, res) => {
   try {
     const { id } = req.params;
@@ -135,43 +209,154 @@ app.get("/tuitions/:id", async (req, res) => {
     res.status(500).json({ message: "Server error" });
   }
 });
-app.get("/applications/:email", async (req, res) => {
-  const email = req.params.email;
-  const result = await applicationCollection
-    .find({ studentEmail: email })
-    .toArray();
 
-  res.send(result);
-});
+// ---------------- STUDENT APIs (JWT + Student Protected) ----------------
 
-// ---------------- POST APIs ----------------
+app.get(
+  "/applications/:email",
+  verifyToken,
+  verifyStudent,
+  async (req, res) => {
+    const email = req.params.email;
+    const result = await applicationCollection
+      .find({ studentEmail: email })
+      .toArray();
+    res.send(result);
+  },
+);
 
-// student applies to a tuition
-app.post("/applications", async (req, res) => {
+app.post("/applications", verifyToken, verifyStudent, async (req, res) => {
   const data = req.body;
-  const result = await applicationCollection.insertOne(data);
+
+  // Prevent duplicate applications for the same tuition by the same student
+  if (data?.tuitionId && data?.studentEmail) {
+    const existing = await applicationCollection.findOne({
+      tuitionId: data.tuitionId,
+      studentEmail: data.studentEmail,
+    });
+    if (existing) {
+      return res
+        .status(409)
+        .json({ message: "You have already applied to this tuition." });
+    }
+  }
+
+  const result = await applicationCollection.insertOne({
+    ...data,
+    status: data.status || "pending",
+    appliedAt: data.appliedAt || new Date().toISOString(),
+  });
   res.send(result);
 });
 
-// ---------------- DELETE APIs ----------------
-app.delete("/applications/:id",async(req,res)=>{
-  const id=req.params.id
-  const result =await applicationCollection.deleteOne({ _id: new ObjectId(id) });
-  res.send(result)
-});
+app.delete(
+  "/applications/:id",
+  verifyToken,
+  verifyStudent,
+  async (req, res) => {
+    const id = req.params.id;
+    const result = await applicationCollection.deleteOne({
+      _id: new ObjectId(id),
+    });
+    res.send(result);
+  },
+);
 
-// 1. Get all tuitions created by a tutor
-app.get("/tuitions/tutor/:email", async (req, res) => {
-  const email = req.params.email;
-  const tuitions = await tuitionsCollection
-    .find({ tutorEmail: email })
-    .sort({ createdAt: -1, _id: -1 })
-    .toArray();
-  res.json(tuitions);
-});
+app.patch(
+  "/users/bookmarks/toggle",
+  verifyToken,
+  verifyStudent,
+  async (req, res) => {
+    try {
+      const { email, tuitionId } = req.body;
+      if (!email || !tuitionId) {
+        return res.status(400).json({ message: "Missing email or tuitionId" });
+      }
 
-// 2. Post a new tuition (Free plan: max 2 posts; Pro plan: unlimited)
-app.post("/tuitions", async (req, res) => {
+      const user = await usersCollection.findOne({ email });
+      const current = Array.isArray(user?.bookmarkedTuitionIds)
+        ? user.bookmarkedTuitionIds
+        : [];
+      const exists = current.includes(tuitionId);
+      const isPro = String(user?.plan || "free").toLowerCase() === "pro";
+
+      if (!exists && !isPro && current.length >= 5) {
+        return res.status(403).json({
+          message:
+            "Free students can bookmark up to 5 tuitions. Upgrade to Pro for unlimited bookmarks.",
+        });
+      }
+
+      const updated = exists
+        ? current.filter((id) => id !== tuitionId)
+        : [...current, tuitionId];
+
+      await usersCollection.updateOne(
+        { email },
+        { $set: { bookmarkedTuitionIds: updated } },
+        { upsert: true },
+      );
+
+      res.json({
+        bookmarked: !exists,
+        bookmarkedTuitionIds: updated,
+      });
+    } catch (err) {
+      console.error("Bookmark toggle error:", err);
+      res.status(500).json({ message: "Failed to toggle bookmark" });
+    }
+  },
+);
+
+app.get(
+  "/users/bookmarks/:email",
+  verifyToken,
+  verifyStudent,
+  async (req, res) => {
+    try {
+      const email = decodeURIComponent(req.params.email);
+      const user = await usersCollection.findOne({ email });
+      const ids = Array.isArray(user?.bookmarkedTuitionIds)
+        ? user.bookmarkedTuitionIds
+        : [];
+
+      if (ids.length === 0) {
+        return res.json([]);
+      }
+
+      const objectIds = ids
+        .filter((id) => ObjectId.isValid(id))
+        .map((id) => new ObjectId(id));
+
+      const savedTuitions = await tuitionsCollection
+        .find({ _id: { $in: objectIds } })
+        .toArray();
+
+      res.json(savedTuitions);
+    } catch (err) {
+      console.error("Fetch bookmarks error:", err);
+      res.status(500).json({ message: "Failed to fetch saved tuitions" });
+    }
+  },
+);
+
+// ---------------- TUTOR APIs (JWT + Tutor Protected) ----------------
+
+app.get(
+  "/tuitions/tutor/:email",
+  verifyToken,
+  verifyTutor,
+  async (req, res) => {
+    const email = req.params.email;
+    const tuitions = await tuitionsCollection
+      .find({ tutorEmail: email })
+      .sort({ createdAt: -1, _id: -1 })
+      .toArray();
+    res.json(tuitions);
+  },
+);
+
+app.post("/tuitions", verifyToken, verifyTutor, async (req, res) => {
   const body = req.body;
   const tutor = await usersCollection.findOne({ email: body.tutorEmail });
   const plan = (tutor?.plan || "free").toLowerCase();
@@ -182,7 +367,8 @@ app.post("/tuitions", async (req, res) => {
     });
     if (existingCount >= 2) {
       return res.status(403).json({
-        message: "Free plan allows up to 2 tuition posts. Upgrade to Pro for unlimited posts.",
+        message:
+          "Free plan allows up to 2 tuition posts. Upgrade to Pro for unlimited posts.",
       });
     }
   }
@@ -200,71 +386,72 @@ app.post("/tuitions", async (req, res) => {
   res.status(201).json({ ...newTuition, _id: result.insertedId });
 });
 
-// 3. Update tuition details or toggle isActive
-app.patch("/tuitions/:id", async (req, res) => {
+app.patch("/tuitions/:id", verifyToken, verifyTutor, async (req, res) => {
   const { id } = req.params;
   const updates = req.body;
   const result = await tuitionsCollection.updateOne(
     { _id: new ObjectId(id) },
-    { $set: updates }
+    { $set: updates },
   );
   res.json(result);
 });
 
-// 4. Delete a tuition post
-app.delete("/tuitions/:id", async (req, res) => {
+app.delete("/tuitions/:id", verifyToken, verifyTutor, async (req, res) => {
   const { id } = req.params;
   const result = await tuitionsCollection.deleteOne({ _id: new ObjectId(id) });
   res.json(result);
 });
 
-// 5. Get all student applications for a tutor's tuitions
-app.get("/applications/tutor/:email", async (req, res) => {
-  const email = req.params.email;
-  const applications = await applicationCollection
-    .find({ tutorEmail: email })
-    .sort({ appliedAt: -1, _id: -1 })
-    .toArray();
-  res.json(applications);
-});
+app.get(
+  "/applications/tutor/:email",
+  verifyToken,
+  verifyTutor,
+  async (req, res) => {
+    const email = req.params.email;
+    const applications = await applicationCollection
+      .find({ tutorEmail: email })
+      .sort({ appliedAt: -1, _id: -1 })
+      .toArray();
+    res.json(applications);
+  },
+);
 
-// 6. Accept or Reject an application
-app.patch("/applications/:id/status", async (req, res) => {
-  const { id } = req.params;
-  const { status } = req.body;
-  if (!["accepted", "rejected", "pending"].includes(status)) {
-    return res.status(400).json({ message: "Invalid status" });
-  }
-  const result = await applicationCollection.updateOne(
-    { _id: new ObjectId(id) },
-    { $set: { status } }
-  );
-  res.json(result);
-});
+app.patch(
+  "/applications/:id/status",
+  verifyToken,
+  verifyTutor,
+  async (req, res) => {
+    const { id } = req.params;
+    const { status } = req.body;
+    if (!["accepted", "rejected", "pending"].includes(status)) {
+      return res.status(400).json({ message: "Invalid status" });
+    }
+    const result = await applicationCollection.updateOne(
+      { _id: new ObjectId(id) },
+      { $set: { status } },
+    );
+    res.json(result);
+  },
+);
 
-// admin
-// Admin Overview stats
-app.get("/admin/overview", async (req, res) => {
+// ---------------- ADMIN APIs (JWT + Admin Protected) ----------------
+
+app.get("/admin/overview", verifyToken, verifyAdmin, async (req, res) => {
   const users = await usersCollection.find().toArray();
   const tuitions = await tuitionsCollection.find().toArray();
   const payments = await paymentsCollection.find().toArray();
-  
-  
 
   const totalUsers = users.length;
-  
-  const totalTutors = tuitions.length
-  
-  
+  const totalTutors = users.filter((u) => u.role === "tutor").length;
   const pendingTuitions = tuitions.filter(
-    (t) => t.approvalStatus === "pending"
+    (t) => t.approvalStatus === "pending",
   ).length;
   const approvedTuitions = tuitions.filter(
-    (t) => t.approvalStatus === "approved"
+    (t) => t.approvalStatus === "approved",
   ).length;
   const totalRevenue = payments.reduce(
     (sum, p) => sum + Number(p.amount || 0),
-    0
+    0,
   );
 
   res.json({
@@ -276,28 +463,30 @@ app.get("/admin/overview", async (req, res) => {
   });
 });
 
-// Get all users
-app.get("/admin/users", async (req, res) => {
+app.get("/admin/users", verifyToken, verifyAdmin, async (req, res) => {
   const users = await usersCollection.find().sort({ _id: -1 }).toArray();
   res.json(users);
 });
 
-// Update user role
-app.patch("/admin/users/:id/role", async (req, res) => {
-  const { id } = req.params;
-  const { role } = req.body;
-  if (!["student", "tutor", "admin"].includes(role)) {
-    return res.status(400).json({ message: "Invalid role" });
-  }
-  const result = await usersCollection.updateOne(
-    { _id: new ObjectId(id) },
-    { $set: { role } }
-  );
-  res.json(result);
-});
+app.patch(
+  "/admin/users/:id/role",
+  verifyToken,
+  verifyAdmin,
+  async (req, res) => {
+    const { id } = req.params;
+    const { role } = req.body;
+    if (!["student", "tutor", "admin"].includes(role)) {
+      return res.status(400).json({ message: "Invalid role" });
+    }
+    const result = await usersCollection.updateOne(
+      { _id: new ObjectId(id) },
+      { $set: { role } },
+    );
+    res.json(result);
+  },
+);
 
-// Get all tuitions for moderation
-app.get("/admin/tuitions", async (req, res) => {
+app.get("/admin/tuitions", verifyToken, verifyAdmin, async (req, res) => {
   const tuitions = await tuitionsCollection
     .find()
     .sort({ createdAt: -1, _id: -1 })
@@ -305,30 +494,35 @@ app.get("/admin/tuitions", async (req, res) => {
   res.json(tuitions);
 });
 
-// Approve or Reject tuition
-app.patch("/admin/tuitions/:id/approval", async (req, res) => {
-  const { id } = req.params;
-  const { approvalStatus } = req.body;
-  if (!["pending", "approved", "rejected"].includes(approvalStatus)) {
-    return res.status(400).json({ message: "Invalid approval status" });
-  }
-  const result = await tuitionsCollection.updateOne(
-    { _id: new ObjectId(id) },
-    { $set: { approvalStatus } }
-  );
-  res.json(result);
-});
+app.patch(
+  "/admin/tuitions/:id/approval",
+  verifyToken,
+  verifyAdmin,
+  async (req, res) => {
+    const { id } = req.params;
+    const { approvalStatus } = req.body;
+    if (!["pending", "approved", "rejected"].includes(approvalStatus)) {
+      return res.status(400).json({ message: "Invalid approval status" });
+    }
+    const result = await tuitionsCollection.updateOne(
+      { _id: new ObjectId(id) },
+      { $set: { approvalStatus } },
+    );
+    res.json(result);
+  },
+);
 
-// Get all payment transactions
-app.get("/admin/transactions", async (req, res) => {
+app.get("/admin/transactions", verifyToken, verifyAdmin, async (req, res) => {
   const payments = await paymentsCollection
     .find()
     .sort({ paidAt: -1, _id: -1 })
     .toArray();
   res.json(payments);
 });
-// 1. Create Stripe Checkout Session for Pro Plan ($15 Tutor / $10 Student)
-app.post("/payments/create-checkout-session", async (req, res) => {
+
+// ---------------- PAYMENTS & SHARED PROFILE APIs ----------------
+
+app.post("/payments/create-checkout-session", verifyToken, async (req, res) => {
   try {
     const { userEmail, userName, userRole, planTier } = req.body;
     const normalizedRole = String(userRole || "student").toLowerCase();
@@ -338,35 +532,35 @@ app.post("/payments/create-checkout-session", async (req, res) => {
     const planName =
       normalizedRole === "tutor" ? "Tutor Pro Plan" : "Student Pro Plan";
 
- const session = await stripe.checkout.sessions.create({
-   mode: "payment",
-   customer_email: userEmail,
-   line_items: [
-     {
-       price_data: {
-         currency: "usd",
-         product_data: {
-           name: planName,
-           description:
-             normalizedRole === "tutor"
-               ? "Unlimited tuition posts & Pro tutor badge on MentorLagbe"
-               : "Priority booking & Pro student benefits on MentorLagbe",
-         },
-         unit_amount: amountUsd * 100,
-       },
-       quantity: 1,
-     },
-   ],
-   metadata: {
-     userEmail,
-     userName: userName || "",
-     userRole: normalizedRole,
-     planName,
-     amount: String(amountUsd),
-   },
-   success_url: `${process.env.CLIENT_URL}/payment/success?session_id={CHECKOUT_SESSION_ID}`,
-   cancel_url: `${process.env.CLIENT_URL}/payment/cancel`,
- });
+    const session = await stripe.checkout.sessions.create({
+      mode: "payment",
+      customer_email: userEmail,
+      line_items: [
+        {
+          price_data: {
+            currency: "usd",
+            product_data: {
+              name: planName,
+              description:
+                normalizedRole === "tutor"
+                  ? "Unlimited tuition posts & Pro tutor badge on MentorLagbe"
+                  : "Priority booking & Pro student benefits on MentorLagbe",
+            },
+            unit_amount: amountUsd * 100,
+          },
+          quantity: 1,
+        },
+      ],
+      metadata: {
+        userEmail,
+        userName: userName || "",
+        userRole: normalizedRole,
+        planName,
+        amount: String(amountUsd),
+      },
+      success_url: `${process.env.CLIENT_URL}/payment/success?session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: `${process.env.CLIENT_URL}/payment/cancel`,
+    });
 
     res.json({ url: session.url, id: session.id });
   } catch (err) {
@@ -375,7 +569,6 @@ app.post("/payments/create-checkout-session", async (req, res) => {
   }
 });
 
-// 2. Verify session on /payment/success, save payment, and upgrade user plan to "pro"
 app.post("/payments/verify-session", async (req, res) => {
   try {
     const { sessionId } = req.body;
@@ -394,7 +587,6 @@ app.post("/payments/verify-session", async (req, res) => {
         ? checkoutSession.payment_intent
         : checkoutSession.id;
 
-    // Avoid duplicate records if the user refreshes /payment/success
     const existing = await paymentsCollection.findOne({
       stripeSessionId: checkoutSession.id,
     });
@@ -402,7 +594,7 @@ app.post("/payments/verify-session", async (req, res) => {
     const meta = checkoutSession.metadata || {};
     const userEmail = meta.userEmail || checkoutSession.customer_email || "";
     const amount = Number(
-      meta.amount || (checkoutSession.amount_total || 0) / 100
+      meta.amount || (checkoutSession.amount_total || 0) / 100,
     );
 
     if (!existing) {
@@ -423,7 +615,7 @@ app.post("/payments/verify-session", async (req, res) => {
     if (userEmail && usersCollection) {
       await usersCollection.updateOne(
         { email: userEmail },
-        { $set: { plan: "pro" } }
+        { $set: { plan: "pro" } },
       );
     }
 
@@ -437,90 +629,8 @@ app.post("/payments/verify-session", async (req, res) => {
     res.status(500).json({ message: "Failed to verify payment" });
   }
 });
-app.get("/users/profile/:email", async (req, res) => {
-  try {
-    const email = decodeURIComponent(req.params.email);
-    const user = await usersCollection.findOne({ email });
-    res.json({
-      name: user?.name || "",
-      email,
-      role: user?.role || "student",
-      plan: user?.plan || "Free",
-      image: user?.image || "",
-    });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ message: "Failed to fetch user profile" });
-  }
-});
-app.patch("/users/bookmarks/toggle", async (req, res) => {
-  try {
-    const { email, tuitionId } = req.body;
-    if (!email || !tuitionId) {
-      return res.status(400).json({ message: "Missing email or tuitionId" });
-    }
 
-    const user = await usersCollection.findOne({ email });
-    const current = Array.isArray(user?.bookmarkedTuitionIds)
-      ? user.bookmarkedTuitionIds
-      : [];
-    const exists = current.includes(tuitionId);
-    const isPro = String(user?.plan || "free").toLowerCase() === "pro";
-
-    if (!exists && !isPro && current.length >= 5) {
-      return res.status(403).json({
-        message:
-          "Free students can bookmark up to 5 tuitions. Upgrade to Pro for unlimited bookmarks.",
-      });
-    }
-
-    const updated = exists
-      ? current.filter((id) => id !== tuitionId)
-      : [...current, tuitionId];
-
-    await usersCollection.updateOne(
-      { email },
-      { $set: { bookmarkedTuitionIds: updated } },
-      { upsert: true },
-    );
-
-    res.json({
-      bookmarked: !exists,
-      bookmarkedTuitionIds: updated,
-    });
-  } catch (err) {
-    console.error("Bookmark toggle error:", err);
-    res.status(500).json({ message: "Failed to toggle bookmark" });
-  }
-});
-
-app.get("/users/bookmarks/:email", async (req, res) => {
-  try {
-    const email = decodeURIComponent(req.params.email);
-    const user = await usersCollection.findOne({ email });
-    const ids = Array.isArray(user?.bookmarkedTuitionIds)
-      ? user.bookmarkedTuitionIds
-      : [];
-
-    if (ids.length === 0) {
-      return res.json([]);
-    }
-
-    const objectIds = ids
-      .filter((id) => ObjectId.isValid(id))
-      .map((id) => new ObjectId(id));
-
-    const savedTuitions = await tuitionsCollection
-      .find({ _id: { $in: objectIds } })
-      .toArray();
-
-    res.json(savedTuitions);
-  } catch (err) {
-    console.error("Fetch bookmarks error:", err);
-    res.status(500).json({ message: "Failed to fetch saved tuitions" });
-  }
-});
-app.get("/users/profile/:email", async (req, res) => {
+app.get("/users/profile/:email", verifyToken, async (req, res) => {
   try {
     const email = decodeURIComponent(req.params.email);
     const user = await usersCollection.findOne({ email });
@@ -542,7 +652,7 @@ app.get("/users/profile/:email", async (req, res) => {
   }
 });
 
-app.patch("/users/profile/:email", async (req, res) => {
+app.patch("/users/profile/:email", verifyToken, async (req, res) => {
   try {
     const email = decodeURIComponent(req.params.email);
     const { name, phone, bio, image } = req.body;
@@ -585,6 +695,7 @@ app.patch("/users/profile/:email", async (req, res) => {
     res.status(500).json({ message: "Failed to update profile" });
   }
 });
+
 app.listen(port, () => {
   console.log(`Example app listening on port ${port}`);
 });
