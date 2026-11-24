@@ -14,7 +14,7 @@ This API stores and serves tuition listings, applications, users, bookmarks, and
 
 - Backend API: `https://tution-lagbe-server.vercel.app/`
 - Local development: `http://localhost:5000`
-- Frontend client: `https://<your-deployed-client-url>`
+- Frontend client: `https://tution-lagbe-client.vercel.app/`
 
 ##  credentials
 
