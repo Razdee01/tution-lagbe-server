@@ -520,6 +520,71 @@ app.get("/users/bookmarks/:email", async (req, res) => {
     res.status(500).json({ message: "Failed to fetch saved tuitions" });
   }
 });
+app.get("/users/profile/:email", async (req, res) => {
+  try {
+    const email = decodeURIComponent(req.params.email);
+    const user = await usersCollection.findOne({ email });
+    res.json({
+      name: user?.name || "",
+      email,
+      role: user?.role || "student",
+      plan: user?.plan || "free",
+      image: user?.image || "",
+      phone: user?.phone || "",
+      bio: user?.bio || "",
+      bookmarkedTuitionIds: Array.isArray(user?.bookmarkedTuitionIds)
+        ? user.bookmarkedTuitionIds
+        : [],
+    });
+  } catch (err) {
+    console.error("Fetch profile error:", err);
+    res.status(500).json({ message: "Failed to fetch user profile" });
+  }
+});
+
+app.patch("/users/profile/:email", async (req, res) => {
+  try {
+    const email = decodeURIComponent(req.params.email);
+    const { name, phone, bio, image } = req.body;
+
+    if (!name || !String(name).trim()) {
+      return res.status(400).json({ message: "Name is required" });
+    }
+
+    const updateFields = {
+      name: String(name).trim(),
+      phone: String(phone || "").trim(),
+      bio: String(bio || "").trim(),
+    };
+
+    if (image !== undefined) {
+      updateFields.image = String(image || "").trim();
+    }
+
+    await usersCollection.updateOne(
+      { email },
+      { $set: updateFields },
+      { upsert: true },
+    );
+
+    const updatedUser = await usersCollection.findOne({ email });
+    res.json({
+      success: true,
+      user: {
+        name: updatedUser?.name || updateFields.name,
+        email,
+        role: updatedUser?.role || "student",
+        plan: updatedUser?.plan || "free",
+        image: updatedUser?.image || "",
+        phone: updatedUser?.phone || "",
+        bio: updatedUser?.bio || "",
+      },
+    });
+  } catch (err) {
+    console.error("Update profile error:", err);
+    res.status(500).json({ message: "Failed to update profile" });
+  }
+});
 app.listen(port, () => {
   console.log(`Example app listening on port ${port}`);
 });
