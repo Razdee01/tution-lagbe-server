@@ -2,14 +2,14 @@ import express from "express";
 import cors from "cors";
 import { MongoClient, ObjectId } from "mongodb";
 import "dotenv/config";
-
+import Stripe from "stripe";
 const app = express();
 const port = 5000;
 
 const client = new MongoClient(
   `mongodb://${process.env.MONGO_USERNAME}:${process.env.MONGO_PASSWORD}@ac-tu4msos-shard-00-00.xujbby0.mongodb.net:27017,ac-tu4msos-shard-00-01.xujbby0.mongodb.net:27017,ac-tu4msos-shard-00-02.xujbby0.mongodb.net:27017/?ssl=true&replicaSet=atlas-113gae-shard-0&authSource=admin`,
 );
-
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 export async function connectToMongoDB() {
   try {
     await client.connect();
@@ -25,7 +25,7 @@ const database = mongodb.db("mentor-lagbe");
 const tuitionsCollection = database.collection("tuitions");
 const applicationCollection = database.collection("applications");
 const usersCollection=database.collection("user")
-
+const paymentsCollection = database.collection("payments");
 app.use(cors());
 app.use(express.json());
 
@@ -248,11 +248,14 @@ app.get("/admin/overview", async (req, res) => {
   const users = await usersCollection.find().toArray();
   const tuitions = await tuitionsCollection.find().toArray();
   const payments = await paymentsCollection.find().toArray();
+  
+  
 
   const totalUsers = users.length;
-  const totalTutors = users.filter(
-    (u) => String(u.role || "").toLowerCase() === "tutor"
-  ).length;
+  
+  const totalTutors = tuitions.length
+  
+  
   const pendingTuitions = tuitions.filter(
     (t) => t.approvalStatus === "pending"
   ).length;
@@ -324,7 +327,132 @@ app.get("/admin/transactions", async (req, res) => {
     .toArray();
   res.json(payments);
 });
+// 1. Create Stripe Checkout Session for Pro Plan ($15 Tutor / $10 Student)
+app.post("/payments/create-checkout-session", async (req, res) => {
+  try {
+    const { userEmail, userName, userRole, planTier } = req.body;
+    const normalizedRole = String(userRole || "student").toLowerCase();
 
+    const amountUsd =
+      planTier === "tutor_pro" || normalizedRole === "tutor" ? 15 : 10;
+    const planName =
+      normalizedRole === "tutor" ? "Tutor Pro Plan" : "Student Pro Plan";
+
+ const session = await stripe.checkout.sessions.create({
+   mode: "payment",
+   customer_email: userEmail,
+   line_items: [
+     {
+       price_data: {
+         currency: "usd",
+         product_data: {
+           name: planName,
+           description:
+             normalizedRole === "tutor"
+               ? "Unlimited tuition posts & Pro tutor badge on MentorLagbe"
+               : "Priority booking & Pro student benefits on MentorLagbe",
+         },
+         unit_amount: amountUsd * 100,
+       },
+       quantity: 1,
+     },
+   ],
+   metadata: {
+     userEmail,
+     userName: userName || "",
+     userRole: normalizedRole,
+     planName,
+     amount: String(amountUsd),
+   },
+   success_url: `${process.env.CLIENT_URL}/payment/success?session_id={CHECKOUT_SESSION_ID}`,
+   cancel_url: `${process.env.CLIENT_URL}/payment/cancel`,
+ });
+
+    res.json({ url: session.url, id: session.id });
+  } catch (err) {
+    console.error("Stripe checkout error:", err);
+    res.status(500).json({ message: "Failed to create checkout session" });
+  }
+});
+
+// 2. Verify session on /payment/success, save payment, and upgrade user plan to "pro"
+app.post("/payments/verify-session", async (req, res) => {
+  try {
+    const { sessionId } = req.body;
+    if (!sessionId) {
+      return res.status(400).json({ message: "Missing sessionId" });
+    }
+
+    const checkoutSession = await stripe.checkout.sessions.retrieve(sessionId);
+
+    if (checkoutSession.payment_status !== "paid") {
+      return res.status(400).json({ message: "Payment not completed" });
+    }
+
+    const transactionId =
+      typeof checkoutSession.payment_intent === "string"
+        ? checkoutSession.payment_intent
+        : checkoutSession.id;
+
+    // Avoid duplicate records if the user refreshes /payment/success
+    const existing = await paymentsCollection.findOne({
+      stripeSessionId: checkoutSession.id,
+    });
+
+    const meta = checkoutSession.metadata || {};
+    const userEmail = meta.userEmail || checkoutSession.customer_email || "";
+    const amount = Number(
+      meta.amount || (checkoutSession.amount_total || 0) / 100
+    );
+
+    if (!existing) {
+      await paymentsCollection.insertOne({
+        userEmail,
+        userName: meta.userName || "",
+        userRole: meta.userRole || "student",
+        planName: meta.planName || "Pro Plan",
+        amount,
+        currency: checkoutSession.currency || "usd",
+        transactionId,
+        stripeSessionId: checkoutSession.id,
+        paymentStatus: "paid",
+        paidAt: new Date().toISOString(),
+      });
+    }
+
+    if (userEmail && usersCollection) {
+      await usersCollection.updateOne(
+        { email: userEmail },
+        { $set: { plan: "pro" } }
+      );
+    }
+
+    res.json({
+      success: true,
+      transactionId,
+      plan: "pro",
+    });
+  } catch (err) {
+    console.error("Verify session error:", err);
+    res.status(500).json({ message: "Failed to verify payment" });
+  }
+});
+app.get("/users/profile/:email", async (req, res) => {
+  try {
+    const email = decodeURIComponent(req.params.email);
+    const user = await usersCollection.findOne({ email });
+    res.json({
+      name: user?.name || "",
+      email,
+      role: user?.role || "student",
+      plan: user?.plan || "Free",
+      image: user?.image || "",
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: "Failed to fetch user profile" });
+  }
+});
 app.listen(port, () => {
   console.log(`Example app listening on port ${port}`);
 });
