@@ -10,7 +10,6 @@ This API stores and serves tuition listings, applications, users, bookmarks, and
 
 ## Live URL
 
-> **TODO before submission:** replace with the deployed backend URL.
 
 - Backend API: `https://tution-lagbe-server.vercel.app/`
 - Local development: `http://localhost:5000`
